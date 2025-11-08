@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>Big Bang 3D — Step 8.3 (Right-Top Chart Edition)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<script src="https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,Segoe UI,Arial;overflow:hidden}
+canvas{position:absolute;top:0;left:0;z-index:0}
+
+/* ---------- UI 공통 ---------- */
+#hud,#panel,#playbox,#chartBox,#epochBadge,#epochLabels{position:absolute;z-index:10}
+#hud{
+  top:12px;left:12px;background:rgba(0,0,30,.6);
+  padding:10px 14px;border-radius:10px
+}
+#hud .title{font-weight:700;color:#74e5ff;margin-bottom:6px}
+
+#panel{
+  bottom:80px;left:50%;transform:translateX(-50%);
+  background:rgba(0,0,25,.75);
+  padding:12px 18px;border-radius:12px;
+  display:flex;gap:16px;flex-wrap:wrap;
+  backdrop-filter:blur(8px)
+}
+.ctrl{display:flex;flex-direction:column;gap:6px}
+.ctrl label{font-size:13px;opacity:.85;text-align:center}
+
+/* ---------- Cosmic Time 슬라이더 ---------- */
+#time{
+  width:500px;height:10px;border-radius:5px;
+  outline:none;accent-color:#00e5ff;
+  background:linear-gradient(to right,
+    #ffffff 0%, #ffffff 5%, 
+    #99ddff 5%, #66b9ff 25%, 
+    #ffd580 25%, #ffd580 45%, 
+    #aabbff 45%, #aabbff 100%);
+}
+
+/* ---------- Epoch 라벨 ---------- */
+#epochLabels{
+  bottom:60px;left:50%;transform:translateX(-50%);
+  display:flex;justify-content:space-between;
+  width:520px;font-size:13px;color:#aaa
+}
+#epochLabels span.active{
+  color:#fff;font-weight:700;text-shadow:0 0 6px #00eaff
+}
+
+/* ---------- Play 버튼 ---------- */
+#playbox{
+  top:15px;right:15px;
+  background:rgba(0,0,40,.6);
+  padding:8px 12px;border-radius:8px
+}
+button{
+  background:#008cff;color:#fff;border:0;
+  border-radius:6px;padding:6px 14px;cursor:pointer
+}
+button:hover{background:#00aaff}
+
+/* ---------- Chart Box (오른쪽 위) ---------- */
+#chartBox{
+  position:absolute;
+  right:15px;top:80px;bottom:auto;
+  width:320px;height:180px;
+  background:rgba(0,0,30,.6);
+  padding:8px;border-radius:10px;
+  backdrop-filter:blur(8px);
+  z-index:10;
+}
+
+/* ---------- Epoch 배지 ---------- */
+#epochBadge{
+  top:50%;left:50%;transform:translate(-50%,-50%);
+  padding:8px 12px;border-radius:10px;
+  background:rgba(0,0,0,.25);
+  font-weight:800;font-size:28px;
+  pointer-events:none;z-index:5
+}
+</style>
+</head>
+
+<body>
+<canvas id="bg"></canvas>
+
+<div id="hud">
+  <div class="title">🌌 Big Bang 3D — Step 8.3</div>
+  <div id="epoch">Epoch: –</div>
+  <div id="stats">a = – | T = – K | ρ = –</div>
+</div>
+
+<div id="panel">
+  <div class="ctrl">
+    <label>⏳ Cosmic Time (0–100)</label>
+    <input id="time" type="range" min="0" max="100" value="0">
+  </div>
+</div>
+
+<div id="epochLabels">
+  <span id="labInflation">Inflation</span>
+  <span id="labPlasma">Plasma</span>
+  <span id="labRecomb">Recomb.</span>
+  <span id="labDark">Dark A</span>
+</div>
+
+<div id="playbox"><button id="playBtn">▶ Play</button></div>
+<div id="chartBox"><canvas id="chart"></canvas></div>
+<div id="epochBadge">–</div>
+
+<script>
+/* ---------- 물리식 ---------- */
+function a_phys(t,H0,Om,Ol){const H=(H0/100)*Math.sqrt(Om/Math.pow(1+t,3)+Ol);return Math.exp(H*t*1e-2);}
+function T_from_a(a){return 2.7/a;}
+function rho_from_a(a){return 1/(a*a*a);}
+function epochOf(T){
+  if(T>1e6)return"Inflation";
+  if(T>1e4)return"Plasma Era";
+  if(T>3e3)return"Recombination";
+  return"big bang";
+}
+
+/* ---------- 색상 팔레트 ---------- */
+const STAR_CLR={
+  "Inflation":0xffffff,
+  "Plasma Era":0x99ddff,
+  "Recombination":0xffdd88,
+  "Dark Ages":0xaabbff
+};
+const BG_CLR={
+  "Inflation":"#ffffff",
+  "Plasma Era":"#66b9ff",
+  "Recombination":"#ffd580",
+  "Dark Ages":"#000010"
+};
+
+/* ---------- Three.js ---------- */
+const renderer=new THREE.WebGLRenderer({antialias:true,canvas:bg});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));
+renderer.setClearColor(0x000000);
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,10000);
+let radius=1200,theta=0,phi=0.9;
+function updateCam(){
+  camera.position.set(
+    radius*Math.sin(phi)*Math.cos(theta),
+    radius*Math.cos(phi),
+    radius*Math.sin(phi)*Math.sin(theta)
+  );
+  camera.lookAt(0,0,0);
+}
+updateCam();
+
+/* ---------- 별 점 생성 ---------- */
+const COUNT=40000,pos=new Float32Array(COUNT*3);
+for(let i=0;i<COUNT;i++){
+  const r=Math.pow(Math.random(),0.62)*260;
+  const th=Math.random()*Math.PI*2;
+  const ph=Math.acos(2*Math.random()-1);
+  pos[i*3]=r*Math.sin(ph)*Math.cos(th);
+  pos[i*3+1]=r*Math.sin(ph)*Math.sin(th);
+  pos[i*3+2]=r*Math.cos(ph);
+}
+const geo=new THREE.BufferGeometry();
+geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+const mat=new THREE.PointsMaterial({color:0xffffff,size:3,sizeAttenuation:true});
+const stars=new THREE.Points(geo,mat);
+scene.add(stars);
+
+/* ---------- Chart.js ---------- */
+const chart=new Chart(document.getElementById("chart"),{
+ type:"line",
+ data:{labels:[],datasets:[
+  {label:"a(t)",borderColor:"#0ff",data:[],pointRadius:0,borderWidth:2},
+  {label:"T(t)*1000K",borderColor:"#f93",data:[],pointRadius:0,borderWidth:2},
+  {label:"ρ(t)",borderColor:"#9f3",data:[],pointRadius:0,borderWidth:2}
+ ]},
+ options:{animation:false,responsive:true,
+  scales:{y:{type:"logarithmic",min:1e-6,max:1e6,ticks:{color:"#ccc"}},
+  x:{ticks:{color:"#ccc"}}},
+  plugins:{legend:{labels:{color:"#ccc"}}}}
+});
+
+/* ---------- UI 요소 ---------- */
+const elTime=time,epochEl=epoch,statsEl=stats,badge=epochBadge;
+
+/* ---------- 마우스 시점 제어 ---------- */
+let dragging=false,sx=0,sy=0,st=0,sp=0;
+addEventListener('mousedown',e=>{dragging=true;sx=e.clientX;sy=e.clientY;st=theta;sp=phi;});
+addEventListener('mousemove',e=>{
+  if(!dragging)return;
+  theta=st-(e.clientX-sx)*0.005;
+  phi=sp-(e.clientY-sy)*0.005;
+  phi=Math.max(0.05,Math.min(Math.PI-0.05,phi));
+  updateCam();
+});
+addEventListener('mouseup',()=>dragging=false);
+addEventListener('wheel',e=>{
+  e.preventDefault();
+  radius*=1+Math.sign(e.deltaY)*0.1;
+  radius=Math.max(200,Math.min(4000,radius));
+  updateCam();
+},{passive:false});
+
+/* ---------- 재생/플래시 ---------- */
+let isPlaying=false,last=performance.now(),speed=0.35;
+let flashT=0;const FLASH_DUR=1.0;
+function triggerFlash(){flashT=FLASH_DUR;}
+playBtn.onclick=()=>{
+  isPlaying=!isPlaying;
+  playBtn.textContent=isPlaying?"⏸ Pause":"▶ Play";
+  last=performance.now();
+  if(isPlaying)triggerFlash();
+};
+
+/* ---------- 라벨 하이라이트 ---------- */
+const labels={
+  "Inflation":document.getElementById("labInflation"),
+  "Plasma Era":document.getElementById("labPlasma"),
+  "Recombination":document.getElementById("labRecomb"),
+  "Dark Ages":document.getElementById("labDark")
+};
+function highlightEpoch(ep){
+  for(const k in labels)labels[k].classList.remove("active");
+  if(labels[ep])labels[ep].classList.add("active");
+}
+
+/* ---------- 메인 루프 ---------- */
+function animate(ts){
+  requestAnimationFrame(animate);
+  const dt=(ts-last);
+  if(isPlaying&&dt>30){
+    let v=parseFloat(elTime.value)+speed;
+    if(v>100)v=100;
+    elTime.value=v;
+    last=ts;
+  }
+
+  const t=parseFloat(elTime.value)/100;
+  const a=a_phys(t,70,0.3,0.7),T=T_from_a(a),rho=rho_from_a(a),ep=epochOf(T);
+  highlightEpoch(ep);
+
+  if(ep==="Dark Ages"){
+    mat.color.set(0xaabbff);
+    mat.size=3.3;
+    renderer.setClearColor("#000010");
+    scene.fog=new THREE.FogExp2(0x150030,0.0012);
+  } else scene.fog=null;
+
+  if(flashT>0){
+    flashT=Math.max(0,flashT-0.02);
+    const k=flashT/FLASH_DUR;
+    mat.size=3+9*k;
+    mat.color.set(0xffffff);
+    renderer.setClearColor(0xffffff);
+  } else {
+    mat.color.set(STAR_CLR[ep]||0xffffff);
+    mat.size=ep==="Inflation"?6:ep==="Plasma Era"?4:ep==="Recombination"?3:3;
+    renderer.setClearColor(BG_CLR[ep]||"#000");
+  }
+
+  stars.scale.setScalar(1+t*5);
+  stars.rotation.y+=0.0015;
+  theta+=0.0003;
+  updateCam();
+
+  badge.textContent=ep;
+  epochEl.textContent=`Epoch: ${ep}`;
+  statsEl.textContent=`a=${a.toFixed(4)} | T=${T.toExponential(3)} K | ρ=${rho.toExponential(3)}`;
+
+  chart.data.labels.push(t.toFixed(2));
+  chart.data.datasets[0].data.push(a);
+  chart.data.datasets[1].data.push(T*1000);
+  chart.data.datasets[2].data.push(rho);
+  if(chart.data.labels.length>150){
+    chart.data.labels.shift();
+    chart.data.datasets.forEach(d=>d.data.shift());
+  }
+  chart.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+/* ---------- 리사이즈 ---------- */
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+  updateCam();
+});
+</script>
+</body>
+</html>
